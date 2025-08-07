@@ -11,6 +11,8 @@ on:
         required: false
         default: '30'
         type: string
+  pull_request:
+    # Temporary trigger for testing - will be removed before final submission
 
 permissions:
   contents: read
