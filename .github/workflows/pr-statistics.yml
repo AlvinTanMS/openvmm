@@ -47,12 +47,14 @@ jobs:
       - name: Generate Report
         run: |
           mkdir -p .github/reports
+          report_date=$(date +%Y-%m-%d)
+          current_date=$(date)
 
-          cat << 'EOF' > .github/reports/pr-statistics-$(date +%Y-%m-%d).md
+          cat << EOF > .github/reports/pr-statistics-${report_date}.md
           # Pull Request Statistics Report
 
           **Repository:** ${{ github.repository }}
-          **Generated:** $(date)
+          **Generated:** ${current_date}
           **Period:** Last ${{ github.event.inputs.days || '30' }} days
 
           ## Overview
