@@ -43,6 +43,9 @@ jobs:
             repo:${{ github.repository }}
             is:pr
             created:>=${{ steps.date-range.outputs.start_date }}
+            -author:app/github-copilot
+            -author:dependabot[bot]
+            -author:github-actions[bot]
 
       - name: Generate Report
         run: |
@@ -61,9 +64,12 @@ jobs:
 
           This report provides insights into pull request activity including:
           - Review velocity and patterns
-          - Time to merge statistics
+          - Time to merge statistics  
           - Team collaboration metrics
           - Development workflow efficiency
+
+          **Note:** Bot accounts (GitHub Copilot, Dependabot, GitHub Actions) are excluded 
+          from statistics to focus on human team collaboration patterns.
 
           ## Key Metrics
 
