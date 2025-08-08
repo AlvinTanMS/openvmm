@@ -28,6 +28,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Calculate Date Range
+        id: date-range
+        run: |
+          days="${{ github.event.inputs.days || '30' }}"
+          start_date=$(date -d "$days days ago" +%Y-%m-%d)
+          echo "start_date=$start_date" >> $GITHUB_OUTPUT
+
       - name: Collect PR Statistics
         uses: github/issue-metrics@v2
         env:
@@ -35,7 +42,7 @@ jobs:
           SEARCH_QUERY: >-
             repo:${{ github.repository }}
             is:pr
-            created:>=${{ github.event.inputs.days || '30' }} days ago
+            created:>=${{ steps.date-range.outputs.start_date }}
 
       - name: Generate Report
         run: |
