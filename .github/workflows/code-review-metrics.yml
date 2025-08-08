@@ -1,0 +1,305 @@
+---
+name: Code Review Metrics
+
+on:
+  schedule:
+    - cron: '0 0 * * 1'  # Weekly on Mondays at midnight UTC
+  workflow_dispatch:
+    inputs:
+      days:
+        description: 'Analysis period in days'
+        required: false
+        default: '30'
+        type: string
+  pull_request:
+    # Temporary trigger for testing - will be removed before final submission
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read
+
+jobs:
+  review-metrics:
+    runs-on: ubuntu-latest
+    name: Generate Code Review Metrics
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Calculate Date Range
+        id: date-range
+        run: |
+          days="${{ github.event.inputs.days || '30' }}"
+          start_date=$(date -d "$days days ago" +%Y-%m-%d)
+          echo "start_date=$start_date" >> $GITHUB_OUTPUT
+
+      - name: Collect Code Review Metrics
+        run: |
+          # Install GitHub CLI if not available
+          if ! command -v gh &> /dev/null; then
+            curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+            echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+            sudo apt update
+            sudo apt install gh -y
+          fi
+
+          # Authenticate with GitHub CLI
+          echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
+
+          # Get PR data for the specified period
+          start_date="${{ steps.date-range.outputs.start_date }}"
+          days="${{ github.event.inputs.days || '30' }}"
+          
+          echo "Collecting review data for PRs created since: $start_date"
+          
+          # Create output files
+          mkdir -p review-data
+          
+          # Get PRs and their reviews, excluding bots
+          gh pr list \
+            --repo "${{ github.repository }}" \
+            --state all \
+            --limit 1000 \
+            --json number,title,author,createdAt,mergedAt,reviews,reviewRequests \
+            --jq ".[] | select(.createdAt >= \"$start_date\" and (.author.login | test(\"^(app/github-copilot|dependabot\\\\[bot\\\\]|github-actions\\\\[bot\\\\])$\") | not))" \
+            > review-data/prs.json
+
+          # Process review data to generate metrics
+          python3 << 'EOF'
+          import json
+          import sys
+          from datetime import datetime, timedelta
+          from collections import defaultdict, Counter
+          
+          # Load PR data
+          with open('review-data/prs.json', 'r') as f:
+            prs = [json.loads(line) for line in f if line.strip()]
+          
+          print(f"Processing {len(prs)} PRs...")
+          
+          # Initialize metrics
+          reviewer_stats = defaultdict(lambda: {
+            'reviews_given': 0,
+            'prs_reviewed': set(),
+            'approval_count': 0,
+            'changes_requested_count': 0,
+            'comment_count': 0
+          })
+          
+          review_response_times = []
+          total_reviews = 0
+          
+          # Process each PR
+          for pr in prs:
+            pr_number = pr['number']
+            pr_created = datetime.fromisoformat(pr['createdAt'].replace('Z', '+00:00'))
+            
+            # Process reviews
+            for review in pr.get('reviews', []):
+              reviewer = review['author']['login']
+              
+              # Skip bot reviewers
+              if reviewer.startswith('app/') or reviewer.endswith('[bot]'):
+                continue
+                
+              total_reviews += 1
+              reviewer_stats[reviewer]['reviews_given'] += 1
+              reviewer_stats[reviewer]['prs_reviewed'].add(pr_number)
+              
+              # Count review types
+              state = review['state']
+              if state == 'APPROVED':
+                reviewer_stats[reviewer]['approval_count'] += 1
+              elif state == 'CHANGES_REQUESTED':
+                reviewer_stats[reviewer]['changes_requested_count'] += 1
+              elif state == 'COMMENTED':
+                reviewer_stats[reviewer]['comment_count'] += 1
+              
+              # Calculate response time
+              review_time = datetime.fromisoformat(review['createdAt'].replace('Z', '+00:00'))
+              response_time = (review_time - pr_created).total_seconds() / 3600  # hours
+              review_response_times.append(response_time)
+          
+          # Convert sets to counts for JSON serialization
+          for reviewer in reviewer_stats:
+            reviewer_stats[reviewer]['prs_reviewed'] = len(reviewer_stats[reviewer]['prs_reviewed'])
+          
+          # Calculate summary metrics
+          avg_response_time = sum(review_response_times) / len(review_response_times) if review_response_times else 0
+          median_response_time = sorted(review_response_times)[len(review_response_times)//2] if review_response_times else 0
+          
+          # Save detailed metrics
+          metrics = {
+            'summary': {
+              'total_prs_analyzed': len(prs),
+              'total_reviews': total_reviews,
+              'total_reviewers': len(reviewer_stats),
+              'avg_response_time_hours': round(avg_response_time, 2),
+              'median_response_time_hours': round(median_response_time, 2)
+            },
+            'reviewer_stats': dict(reviewer_stats)
+          }
+          
+          with open('review-data/metrics.json', 'w') as f:
+            json.dump(metrics, f, indent=2)
+          
+          print("Review metrics generated successfully")
+          print(f"Total reviewers: {len(reviewer_stats)}")
+          print(f"Total reviews: {total_reviews}")
+          print(f"Average response time: {avg_response_time:.2f} hours")
+          EOF
+
+      - name: Generate Report
+        run: |
+          mkdir -p .github/reports
+          report_date=$(date +%Y-%m-%d)
+          
+          # Create Python script for report generation
+          cat > generate_report.py << 'PYTHON_SCRIPT'
+          import json
+          import os
+          import sys
+          from datetime import datetime
+
+          try:
+            # Load metrics
+            with open('review-data/metrics.json', 'r') as f:
+              metrics = json.load(f)
+
+            summary = metrics['summary']
+            reviewer_stats = metrics['reviewer_stats']
+
+            # Sort reviewers by review count
+            sorted_reviewers = sorted(reviewer_stats.items(), key=lambda x: x[1]['reviews_given'], reverse=True)
+
+            repo_name = os.environ.get('GITHUB_REPOSITORY', 'Unknown')
+            analysis_days = os.environ.get('ANALYSIS_DAYS', '30')
+            
+            # Generate markdown report
+            report_lines = [
+              "# Code Review Metrics Report",
+              "",
+              f"**Repository:** {repo_name}",
+              f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}",
+              f"**Period:** Last {analysis_days} days",
+              "",
+              "## Summary",
+              "",
+              f"- **Total PRs Analyzed:** {summary['total_prs_analyzed']}",
+              f"- **Total Reviews:** {summary['total_reviews']}",
+              f"- **Active Reviewers:** {summary['total_reviewers']}",
+              f"- **Average Review Response Time:** {summary['avg_response_time_hours']:.1f} hours",
+              f"- **Median Review Response Time:** {summary['median_response_time_hours']:.1f} hours",
+              "",
+              "## Top Reviewers",
+              "",
+              "| Reviewer | Reviews Given | PRs Reviewed | Approvals | Changes Requested | Comments |",
+              "|----------|---------------|--------------|-----------|-------------------|----------|"
+            ]
+
+            # Add top reviewers to table
+            for reviewer, stats in sorted_reviewers[:15]:  # Top 15 reviewers
+              report_lines.append(f"| {reviewer} | {stats['reviews_given']} | {stats['prs_reviewed']} | {stats['approval_count']} | {stats['changes_requested_count']} | {stats['comment_count']} |")
+
+            # Calculate review type totals
+            total_approvals = sum(stats['approval_count'] for stats in reviewer_stats.values())
+            total_changes = sum(stats['changes_requested_count'] for stats in reviewer_stats.values())  
+            total_comments = sum(stats['comment_count'] for stats in reviewer_stats.values())
+
+            most_active = sorted_reviewers[0] if sorted_reviewers else ('N/A', {'reviews_given': 0})
+            avg_reviews = summary['total_reviews'] / summary['total_reviewers'] if summary['total_reviewers'] > 0 else 0
+
+            report_lines.extend([
+              "",
+              "## Review Distribution",
+              "",
+              "### Review Activity",
+              f"- **Most Active Reviewer:** {most_active[0]} ({most_active[1]['reviews_given']} reviews)",
+              f"- **Average Reviews per Reviewer:** {avg_reviews:.1f} reviews",
+              "",
+              "### Review Types Distribution",
+              f"- **Approvals:** {total_approvals} ({total_approvals/summary['total_reviews']*100:.1f}%)" if summary['total_reviews'] > 0 else "- **Approvals:** 0 (0%)",
+              f"- **Changes Requested:** {total_changes} ({total_changes/summary['total_reviews']*100:.1f}%)" if summary['total_reviews'] > 0 else "- **Changes Requested:** 0 (0%)",
+              f"- **Comment Reviews:** {total_comments} ({total_comments/summary['total_reviews']*100:.1f}%)" if summary['total_reviews'] > 0 else "- **Comment Reviews:** 0 (0%)",
+              "",
+              "## Insights",
+              "",
+              "### Team Collaboration",
+              f"- **Reviewer Participation:** {summary['total_reviewers']} team members actively reviewing code",
+              f"- **Review Workload:** Reviews distributed among {summary['total_reviewers']} reviewers",
+              "",
+              "### Process Efficiency",
+              f"- **Response Time:** Average {summary['avg_response_time_hours']:.1f} hours to first review",
+              f"- **Review Velocity:** {summary['total_reviews']/summary['total_prs_analyzed']:.1f} reviews per PR on average" if summary['total_prs_analyzed'] > 0 else "- **Review Velocity:** 0 reviews per PR on average",
+              "",
+              "## Usage",
+              "",
+              "These metrics help teams:",
+              "- **Balance Review Workloads:** Identify reviewer capacity and distribution",
+              "- **Improve Response Times:** Track review turnaround and identify bottlenecks",
+              "- **Recognize Contributors:** Highlight active code reviewers",
+              "- **Optimize Processes:** Understanding review patterns for workflow improvements",
+              "",
+              "---",
+              "*Generated automatically by GitHub Actions - focusing on human reviewers only (bots excluded)*"
+            ])
+
+            # Save report
+            report_content = "\n".join(report_lines)
+            output_file = f'.github/reports/code-review-metrics-{os.environ.get("GITHUB_RUN_NUMBER", "test")}.md'
+            with open(output_file, 'w') as f:
+              f.write(report_content)
+            
+            print("Report generated successfully")
+            print(f"Output file: {output_file}")
+
+          except Exception as e:
+            print(f"Error generating report: {e}")
+            sys.exit(1)
+          PYTHON_SCRIPT
+
+          # Run the report generation
+          python3 generate_report.py
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          ANALYSIS_DAYS: ${{ github.event.inputs.days || '30' }}
+          GITHUB_RUN_NUMBER: ${{ github.run_number }}
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: code-review-metrics-${{ github.run_number }}
+          path: |
+            .github/reports/code-review-metrics-*.md
+            review-data/metrics.json
+          retention-days: 90
+
+      - name: Job Summary
+        run: |
+          echo "# Code Review Metrics Generated 📊" >> $GITHUB_STEP_SUMMARY
+          days="${{ github.event.inputs.days || '30' }}"
+          echo "Period: ${days} days" >> $GITHUB_STEP_SUMMARY
+          echo "Focus: Code reviewer activity and collaboration patterns" >> $GITHUB_STEP_SUMMARY
+          echo "Report artifacts uploaded with 90-day retention" >> $GITHUB_STEP_SUMMARY
+          
+          # Add summary stats to GitHub Actions summary
+          if [ -f review-data/metrics.json ]; then
+            python3 << 'EOF'
+          import json
+          import os
+          
+          with open('review-data/metrics.json', 'r') as f:
+            metrics = json.load(f)
+          
+          summary = metrics['summary']
+          
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as f:
+            f.write(f"\n## Key Metrics\n")
+            f.write(f"- **Active Reviewers:** {summary['total_reviewers']}\n")
+            f.write(f"- **Total Reviews:** {summary['total_reviews']}\n") 
+            f.write(f"- **PRs Analyzed:** {summary['total_prs_analyzed']}\n")
+            f.write(f"- **Avg Response Time:** {summary['avg_response_time_hours']:.1f} hours\n")
+          EOF
+          fi
