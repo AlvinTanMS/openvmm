@@ -78,17 +78,25 @@ jobs:
           
           print(f"Processing {len(prs)} PRs...")
           
-          # Initialize reviewer metrics - focus on who and how many
+          # Initialize metrics - track both reviewers and contributors
           reviewer_stats = defaultdict(lambda: {
             'reviews_given': 0,
             'prs_reviewed': set()
           })
           
+          contributor_stats = defaultdict(lambda: {
+            'prs_authored': 0
+          })
+          
           total_reviews = 0
           
-          # Process each PR to count reviews per reviewer
+          # Process each PR to count reviews per reviewer and track contributors
           for pr in prs:
             pr_number = pr['number']
+            author = pr['author']['login']
+            
+            # Track PR authors (contributors)
+            contributor_stats[author]['prs_authored'] += 1
             
             # Process reviews
             for review in pr.get('reviews', []):
@@ -106,14 +114,23 @@ jobs:
           for reviewer in reviewer_stats:
             reviewer_stats[reviewer]['prs_reviewed'] = len(reviewer_stats[reviewer]['prs_reviewed'])
           
-          # Save focused metrics
+          # Find contributors who haven't done reviews
+          all_contributors = set(contributor_stats.keys())
+          all_reviewers = set(reviewer_stats.keys())
+          contributors_not_reviewing = all_contributors - all_reviewers
+          
+          # Save comprehensive metrics
           metrics = {
             'summary': {
               'total_prs_analyzed': len(prs),
               'total_reviews': total_reviews,
-              'total_reviewers': len(reviewer_stats)
+              'total_reviewers': len(reviewer_stats),
+              'total_contributors': len(contributor_stats),
+              'contributors_not_reviewing': len(contributors_not_reviewing)
             },
-            'reviewer_stats': dict(reviewer_stats)
+            'reviewer_stats': dict(reviewer_stats),
+            'contributor_stats': dict(contributor_stats),
+            'contributors_not_reviewing': list(contributors_not_reviewing)
           }
           
           with open('review-data/metrics.json', 'w') as f:
@@ -122,6 +139,8 @@ jobs:
           print("Review metrics generated successfully")
           print(f"Total reviewers: {len(reviewer_stats)}")
           print(f"Total reviews: {total_reviews}")
+          print(f"Total contributors: {len(contributor_stats)}")
+          print(f"Contributors not reviewing: {len(contributors_not_reviewing)}")
           EOF
 
       - name: Generate Report
@@ -143,14 +162,19 @@ jobs:
 
             summary = metrics['summary']
             reviewer_stats = metrics['reviewer_stats']
+            contributor_stats = metrics['contributor_stats']
+            contributors_not_reviewing = metrics['contributors_not_reviewing']
 
             # Sort reviewers by review count
             sorted_reviewers = sorted(reviewer_stats.items(), key=lambda x: x[1]['reviews_given'], reverse=True)
+            
+            # Sort contributors by PR count
+            sorted_contributors = sorted(contributor_stats.items(), key=lambda x: x[1]['prs_authored'], reverse=True)
 
             repo_name = os.environ.get('GITHUB_REPOSITORY', 'Unknown')
             analysis_days = os.environ.get('ANALYSIS_DAYS', '30')
             
-            # Generate focused markdown report
+            # Generate comprehensive markdown report
             report_lines = [
               "# Code Review Metrics Report",
               "",
@@ -163,6 +187,8 @@ jobs:
               f"- **Total PRs Analyzed:** {summary['total_prs_analyzed']}",
               f"- **Total Reviews Given:** {summary['total_reviews']}",
               f"- **Active Reviewers:** {summary['total_reviewers']}",
+              f"- **Total Contributors:** {summary['total_contributors']}",
+              f"- **Contributors Not Reviewing:** {summary['contributors_not_reviewing']}",
               "",
               "## Who Is Reviewing Code",
               "",
@@ -174,9 +200,29 @@ jobs:
             for reviewer, stats in sorted_reviewers:
               report_lines.append(f"| {reviewer} | {stats['reviews_given']} | {stats['prs_reviewed']} |")
 
+            # Add section for contributors who haven't done reviews
+            report_lines.extend([
+              "",
+              "## Contributors Who Have Not Done Reviews",
+              ""
+            ])
+            
+            if contributors_not_reviewing:
+              report_lines.extend([
+                "| Contributor | PRs Authored |",
+                "|-------------|--------------|"
+              ])
+              
+              for contributor in contributors_not_reviewing:
+                prs_authored = contributor_stats[contributor]['prs_authored']
+                report_lines.append(f"| {contributor} | {prs_authored} |")
+            else:
+              report_lines.append("*All contributors are also participating in code reviews* ✅")
+
             # Add insights focused on reviewer activity
             most_active = sorted_reviewers[0] if sorted_reviewers else ('N/A', {'reviews_given': 0})
             avg_reviews = summary['total_reviews'] / summary['total_reviewers'] if summary['total_reviewers'] > 0 else 0
+            review_participation = (summary['total_reviewers'] / summary['total_contributors'] * 100) if summary['total_contributors'] > 0 else 0
 
             report_lines.extend([
               "",
@@ -184,11 +230,11 @@ jobs:
               "",
               f"- **Most Active Reviewer:** {most_active[0]} ({most_active[1]['reviews_given']} reviews)",
               f"- **Average Reviews per Reviewer:** {avg_reviews:.1f} reviews",
-              f"- **Review Participation:** {summary['total_reviewers']} team members actively reviewing code",
+              f"- **Review Participation Rate:** {review_participation:.1f}% of contributors are also reviewing",
               f"- **Review Distribution:** {summary['total_reviews']} total reviews across {summary['total_prs_analyzed']} PRs",
               "",
               "---",
-              "*Report focuses on who is reviewing code and review volume per person (bots excluded)*"
+              "*Report shows who is reviewing code, review volume per person, and contributors who could participate more in reviews (bots excluded)*"
             ])
 
             # Save report
@@ -253,6 +299,8 @@ jobs:
             f.write(f"- **Active Reviewers:** {summary['total_reviewers']}\n")
             f.write(f"- **Total Reviews:** {summary['total_reviews']}\n") 
             f.write(f"- **PRs Analyzed:** {summary['total_prs_analyzed']}\n")
+            f.write(f"- **Total Contributors:** {summary['total_contributors']}\n")
+            f.write(f"- **Contributors Not Reviewing:** {summary['contributors_not_reviewing']}\n")
             f.write(f"- **Most Active Reviewer:** {top_reviewer_name} ({top_reviewer_stats['reviews_given']} reviews)\n")
           EOF
           fi
