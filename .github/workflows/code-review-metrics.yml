@@ -11,8 +11,6 @@ on:
         required: false
         default: '30'
         type: string
-  pull_request:
-    # Temporary trigger for testing - will be removed before final submission
 
 permissions:
   contents: read
@@ -63,7 +61,7 @@ jobs:
             --state all \
             --limit 1000 \
             --json number,title,author,createdAt,mergedAt,reviews,reviewRequests \
-            --jq ".[] | select(.createdAt >= \"$start_date\" and (.author.login | test(\"^(app/github-copilot|dependabot\\\\[bot\\\\]|github-actions\\\\[bot\\\\])$\") | not))" \
+            --jq ".[] | select(.createdAt >= \"$start_date\" and (.author.login | test(\"\\\\[bot\\\\]$|^app/|^dependabot|^github-actions|copilot|^renovate|^greenkeeper|^snyk-bot|^semantic-release-bot|^whitesource\") | not))" \
             > review-data/prs.json
 
           # Process review data to generate metrics focused on who is reviewing and review counts
@@ -95,15 +93,35 @@ jobs:
             pr_number = pr['number']
             author = pr['author']['login']
             
-            # Track PR authors (contributors)
-            contributor_stats[author]['prs_authored'] += 1
+            # Skip bot contributors with comprehensive patterns
+            if not (author.endswith('[bot]') or 
+                    author.startswith('app/') or
+                    'copilot' in author.lower() or
+                    author.startswith('dependabot') or
+                    author.startswith('github-actions') or
+                    author.startswith('renovate') or
+                    author.startswith('greenkeeper') or
+                    author.startswith('snyk-bot') or
+                    author.startswith('semantic-release-bot') or
+                    author.startswith('whitesource')):
+              # Track PR authors (contributors) - only non-bots
+              contributor_stats[author]['prs_authored'] += 1
             
             # Process reviews
             for review in pr.get('reviews', []):
               reviewer = review['author']['login']
               
-              # Skip bot reviewers
-              if reviewer.startswith('app/') or reviewer.endswith('[bot]'):
+              # Skip bot reviewers with comprehensive patterns
+              if (reviewer.endswith('[bot]') or 
+                  reviewer.startswith('app/') or
+                  'copilot' in reviewer.lower() or
+                  reviewer.startswith('dependabot') or
+                  reviewer.startswith('github-actions') or
+                  reviewer.startswith('renovate') or
+                  reviewer.startswith('greenkeeper') or
+                  reviewer.startswith('snyk-bot') or
+                  reviewer.startswith('semantic-release-bot') or
+                  reviewer.startswith('whitesource')):
                 continue
                 
               total_reviews += 1
