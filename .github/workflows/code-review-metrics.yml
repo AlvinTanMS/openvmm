@@ -55,13 +55,13 @@ jobs:
           # Create output files
           mkdir -p review-data
           
-          # Get PRs and their reviews, excluding bots
+          # Get PRs and their reviews (filtering will be done in Python for better control)
           gh pr list \
             --repo "${{ github.repository }}" \
             --state all \
             --limit 1000 \
             --json number,title,author,createdAt,mergedAt,reviews,reviewRequests \
-            --jq ".[] | select(.createdAt >= \"$start_date\" and (.author.login | test(\"\\\\[bot\\\\]$|^app/|^dependabot|^github-actions|copilot|^renovate|^greenkeeper|^snyk-bot|^semantic-release-bot|^whitesource\") | not))" \
+            --jq ".[] | select(.createdAt >= \"$start_date\")" \
             > review-data/prs.json
 
           # Process review data to generate metrics focused on who is reviewing and review counts
@@ -70,11 +70,47 @@ jobs:
           import sys
           from collections import defaultdict
           
+          def is_bot_account(username):
+            """Check if a username belongs to a bot account based on common patterns."""
+            if not username:
+                return True
+            
+            username_lower = username.lower()
+            
+            # Common bot patterns found in GitHub repositories
+            bot_patterns = [
+                '[bot]',           # Any account ending in [bot]
+                'github-actions',  # GitHub Actions
+                'dependabot',      # Dependabot  
+                'app/',           # GitHub Apps (start with app/)
+            ]
+            
+            # Check for GitHub Copilot variations (case insensitive)
+            if 'copilot' in username_lower:
+                return True
+            
+            # Check other bot patterns
+            for pattern in bot_patterns:
+                if pattern == '[bot]' and username.endswith(pattern):
+                    return True
+                elif pattern == 'app/' and username.startswith(pattern):
+                    return True
+                elif pattern in username_lower:
+                    return True
+            
+            return False
+          
           # Load PR data
           with open('review-data/prs.json', 'r') as f:
             prs = [json.loads(line) for line in f if line.strip()]
           
           print(f"Processing {len(prs)} PRs...")
+          
+          # Debug: Track all accounts we see for better filtering insights
+          all_authors = set()
+          all_reviewers = set()
+          filtered_authors = set()
+          filtered_reviewers = set()
           
           # Initialize metrics - track both reviewers and contributors
           reviewer_stats = defaultdict(lambda: {
@@ -92,36 +128,22 @@ jobs:
           for pr in prs:
             pr_number = pr['number']
             author = pr['author']['login']
+            all_authors.add(author)
             
-            # Skip bot contributors with comprehensive patterns
-            if not (author.endswith('[bot]') or 
-                    author.startswith('app/') or
-                    'copilot' in author.lower() or
-                    author.startswith('dependabot') or
-                    author.startswith('github-actions') or
-                    author.startswith('renovate') or
-                    author.startswith('greenkeeper') or
-                    author.startswith('snyk-bot') or
-                    author.startswith('semantic-release-bot') or
-                    author.startswith('whitesource')):
-              # Track PR authors (contributors) - only non-bots
+            # Track PR authors (contributors) - only non-bots
+            if not is_bot_account(author):
               contributor_stats[author]['prs_authored'] += 1
+            else:
+              filtered_authors.add(author)
             
             # Process reviews
             for review in pr.get('reviews', []):
               reviewer = review['author']['login']
+              all_reviewers.add(reviewer)
               
-              # Skip bot reviewers with comprehensive patterns
-              if (reviewer.endswith('[bot]') or 
-                  reviewer.startswith('app/') or
-                  'copilot' in reviewer.lower() or
-                  reviewer.startswith('dependabot') or
-                  reviewer.startswith('github-actions') or
-                  reviewer.startswith('renovate') or
-                  reviewer.startswith('greenkeeper') or
-                  reviewer.startswith('snyk-bot') or
-                  reviewer.startswith('semantic-release-bot') or
-                  reviewer.startswith('whitesource')):
+              # Skip bot reviewers
+              if is_bot_account(reviewer):
+                filtered_reviewers.add(reviewer)
                 continue
                 
               total_reviews += 1
@@ -159,6 +181,18 @@ jobs:
           print(f"Total reviews: {total_reviews}")
           print(f"Total contributors: {len(contributor_stats)}")
           print(f"Contributors not reviewing: {len(contributors_not_reviewing)}")
+          
+          # Debug output for account filtering
+          print(f"\nFiltering Summary:")
+          print(f"Total authors seen: {len(all_authors)}")
+          print(f"Total reviewers seen: {len(all_reviewers)}")
+          print(f"Authors filtered (bots): {len(filtered_authors)}")
+          print(f"Reviewers filtered (bots): {len(filtered_reviewers)}")
+          
+          if filtered_authors:
+            print(f"Filtered authors: {sorted(filtered_authors)}")
+          if filtered_reviewers:
+            print(f"Filtered reviewers: {sorted(filtered_reviewers)}")
           EOF
 
       - name: Generate Report
@@ -252,7 +286,7 @@ jobs:
               f"- **Review Distribution:** {summary['total_reviews']} total reviews across {summary['total_prs_analyzed']} PRs",
               "",
               "---",
-              "*Report shows who is reviewing code, review volume per person, and contributors who could participate more in reviews (bots excluded)*"
+              "*Report shows who is reviewing code, review volume per person, and contributors who could participate more in reviews (common bots filtered: Copilot, Dependabot, GitHub Actions, and [bot] accounts)*"
             ])
 
             # Save report
@@ -290,7 +324,7 @@ jobs:
           echo "# Code Review Metrics Generated 📊" >> $GITHUB_STEP_SUMMARY
           days="${{ github.event.inputs.days || '30' }}"
           echo "Period: ${days} days" >> $GITHUB_STEP_SUMMARY
-          echo "Focus: Who is reviewing code and review volume per reviewer" >> $GITHUB_STEP_SUMMARY
+          echo "Focus: Who is reviewing code and review volume per reviewer (common bots filtered)" >> $GITHUB_STEP_SUMMARY
           echo "Report artifacts uploaded with 90-day retention" >> $GITHUB_STEP_SUMMARY
           
           # Add summary stats to GitHub Actions summary
