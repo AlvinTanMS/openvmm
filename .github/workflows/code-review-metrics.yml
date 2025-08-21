@@ -70,47 +70,11 @@ jobs:
           import sys
           from collections import defaultdict
           
-          def is_bot_account(username):
-            """Check if a username belongs to a bot account based on common patterns."""
-            if not username:
-                return True
-            
-            username_lower = username.lower()
-            
-            # Common bot patterns found in GitHub repositories
-            bot_patterns = [
-                '[bot]',           # Any account ending in [bot]
-                'github-actions',  # GitHub Actions
-                'dependabot',      # Dependabot  
-                'app/',           # GitHub Apps (start with app/)
-            ]
-            
-            # Check for GitHub Copilot variations (case insensitive)
-            if 'copilot' in username_lower:
-                return True
-            
-            # Check other bot patterns
-            for pattern in bot_patterns:
-                if pattern == '[bot]' and username.endswith(pattern):
-                    return True
-                elif pattern == 'app/' and username.startswith(pattern):
-                    return True
-                elif pattern in username_lower:
-                    return True
-            
-            return False
-          
           # Load PR data
           with open('review-data/prs.json', 'r') as f:
             prs = [json.loads(line) for line in f if line.strip()]
           
           print(f"Processing {len(prs)} PRs...")
-          
-          # Debug: Track all accounts we see for better filtering insights
-          all_authors = set()
-          all_reviewers = set()
-          filtered_authors = set()
-          filtered_reviewers = set()
           
           # Initialize metrics - track both reviewers and contributors
           reviewer_stats = defaultdict(lambda: {
@@ -128,24 +92,14 @@ jobs:
           for pr in prs:
             pr_number = pr['number']
             author = pr['author']['login']
-            all_authors.add(author)
             
-            # Track PR authors (contributors) - only non-bots
-            if not is_bot_account(author):
-              contributor_stats[author]['prs_authored'] += 1
-            else:
-              filtered_authors.add(author)
+            # Track PR authors (contributors)
+            contributor_stats[author]['prs_authored'] += 1
             
             # Process reviews
             for review in pr.get('reviews', []):
               reviewer = review['author']['login']
-              all_reviewers.add(reviewer)
               
-              # Skip bot reviewers
-              if is_bot_account(reviewer):
-                filtered_reviewers.add(reviewer)
-                continue
-                
               total_reviews += 1
               reviewer_stats[reviewer]['reviews_given'] += 1
               reviewer_stats[reviewer]['prs_reviewed'].add(pr_number)
@@ -181,18 +135,6 @@ jobs:
           print(f"Total reviews: {total_reviews}")
           print(f"Total contributors: {len(contributor_stats)}")
           print(f"Contributors not reviewing: {len(contributors_not_reviewing)}")
-          
-          # Debug output for account filtering
-          print(f"\nFiltering Summary:")
-          print(f"Total authors seen: {len(all_authors)}")
-          print(f"Total reviewers seen: {len(all_reviewers)}")
-          print(f"Authors filtered (bots): {len(filtered_authors)}")
-          print(f"Reviewers filtered (bots): {len(filtered_reviewers)}")
-          
-          if filtered_authors:
-            print(f"Filtered authors: {sorted(filtered_authors)}")
-          if filtered_reviewers:
-            print(f"Filtered reviewers: {sorted(filtered_reviewers)}")
           EOF
 
       - name: Generate Report
@@ -286,7 +228,7 @@ jobs:
               f"- **Review Distribution:** {summary['total_reviews']} total reviews across {summary['total_prs_analyzed']} PRs",
               "",
               "---",
-              "*Report shows who is reviewing code, review volume per person, and contributors who could participate more in reviews (common bots filtered: Copilot, Dependabot, GitHub Actions, and [bot] accounts)*"
+              "*Report shows who is reviewing code, review volume per person, and contributors who could participate more in reviews*"
             ])
 
             # Save report
@@ -324,7 +266,7 @@ jobs:
           echo "# Code Review Metrics Generated 📊" >> $GITHUB_STEP_SUMMARY
           days="${{ github.event.inputs.days || '30' }}"
           echo "Period: ${days} days" >> $GITHUB_STEP_SUMMARY
-          echo "Focus: Who is reviewing code and review volume per reviewer (common bots filtered)" >> $GITHUB_STEP_SUMMARY
+          echo "Focus: Who is reviewing code and review volume per reviewer" >> $GITHUB_STEP_SUMMARY
           echo "Report artifacts uploaded with 90-day retention" >> $GITHUB_STEP_SUMMARY
           
           # Add summary stats to GitHub Actions summary
